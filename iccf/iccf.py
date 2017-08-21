@@ -2,10 +2,24 @@
 # This module implements the cross-correlation function from White & Peterson (1994)
 from __future__ import (absolute_import, division, print_function, unicode_literals)
 
+import warnings
+warnings.filterwarnings('ignore')
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 import scipy.stats
 import argparse, sys
+
+plt.rcParams['font.family'] = 'serif'
+plt.rcParams['font.serif'] = 'Ubuntu'
+plt.rcParams['font.monospace'] = 'Ubuntu Mono'
+plt.rcParams['font.size'] = 10
+plt.rcParams['axes.labelsize'] = 10
+plt.rcParams['axes.labelweight'] = 'bold'
+plt.rcParams['xtick.labelsize'] = 8
+plt.rcParams['ytick.labelsize'] = 8
+plt.rcParams['legend.fontsize'] = 10
+plt.rcParams['figure.titlesize'] = 12
 
 def read(fname):
     """ Reads both continuum and line-emission files passed by the user.
@@ -28,11 +42,11 @@ def read(fname):
         yerr (array): Associated uncertainties
     """
     try:
-        t, y, yerr = np.genfromtxt(fname, usecols = (0, 1, 2), delimiter = ',', dtype = np.float64, unpack = True)
+        t, y, ye = np.genfromtxt(fname, usecols = (0, 1, 2), dtype = np.float64, unpack = True)
     except Exception, e:
         print('Could not read file '+str(fname))
         sys.exit()
-    return {'t': t, 'y': y, 'yerr': yerr}
+    return t, y, ye
 
 def mag_to_flux(mag):
     """ Convert V-band magnitude to flux.
@@ -78,29 +92,32 @@ def to_flux_err(err_mag, counts):
     """
     return (err_mag * np.log(10) * counts) / 2.5
 
-def plot_original(x, y, c, title = None):
+def plot_original(x, y, ye, x2, y2, ye2, t = None, t2 = None):
     """ Show original light curves
         
     Parameters
     ----------
     
-        x     (array): Epoch
-        y     (array): Flux measurement
-        c     (array): Associated flux uncertainty
-        title (str)  : Continuum or line-emission   
+        x      (array): Epoch
+        y      (array): Flux measurements
+        ye     (array): Associated flux uncertainty
+        t      (str)  : Title of the plot
         
     Returns
     -------
     
         Plotted light curve with error bars
     """
-    plt.figure()
+    fig = plt.figure()
 
-    plt.errorbar(x, y, yerr = c, fmt = 'o', color = 'black')
-    plt.title(title, fontsize = 'x-large')
-    plt.xlabel('HJD - 2450000', fontsize = 'x-large')
-    plt.ylabel('Flux', fontsize = 'x-large')
-    plt.grid()
+    axis1 = fig.add_subplot(211)
+    axis1.errorbar(x, y, yerr = ye, fmt = 'o', color = 'black', label = t)
+    axis1.legend(loc = 'best')
+    axis2 = fig.add_subplot(212)
+    axis2.errorbar(x2, y2, yerr = ye2, fmt = 'o', color = 'green', label = t2)
+    axis2.set_xlabel('HJD - 2450000')
+    axis2.legend(loc = 'best')
+    fig.text(0.03, 0.5, 'Flux', ha='center', va='center', rotation='vertical', fontweight = 'bold')
 
 def cross_corr(x, tx, y, ty, minlag, maxlag, step, shifted = None):
     """ Calculate the cross-correlation series between two light curves
@@ -170,26 +187,33 @@ def get_lags(lags, corr, threshold = 80):
         peak      (float): Peak
     """
     # Get correlations above specified threshold and corresponding lags
-    mask = (corr > corr.max() * threshold/100.0)
+    mask = (corr >= corr.max() * threshold/100.0)
     above_corr = corr[mask]
     above_lags = lags[mask]
     
-    # Compute the centroid of the peak
-    centroid = (above_lags * above_corr).sum() / above_corr.sum()
+    if above_corr.size > 0:
+        # Compute the centroid of the peak
+        centroid = (above_lags * above_corr).sum() / above_corr.sum()
+    else:
+        centroid = 0
 
     # The lag of the cross-correlation peak
     peak = lags[np.argmax(corr)]
     
-    return {'centroid': centroid, 'peak': peak}
+    return centroid, peak
 
-def show_CCF(lags, corr, title = None):
+def show_CCF(avg_lags, avg_corr, acf_lags, acf_corr, centroid, peak):
     """ Show cross-correlation results
         
     Parameters
     ----------
     
-        lags  (array): Lag values
-        corr  (array): cross-correlation values
+        avg_lags  (array): Average lag values
+        avg_corr  (array): Average cross-correlation values
+        acf_lags  (array): Autocorrelated lag values
+        acf_corr  (array): Autocorrelated cross-correlation values
+        centroid  (float): Centroid of the peak
+        peak      (float): Peak of the CCF
         
     Returns
     -------
@@ -198,21 +222,39 @@ def show_CCF(lags, corr, title = None):
     """
     plt.figure()
 
-    plt.plot(lags, corr, '-k')
-    plt.ylim([0, 1])
-    plt.title(title)
-    plt.xlabel('lags [days]', fontsize = 'x-large')
-    plt.ylabel('r', fontsize = 'x-large')
-    plt.grid()
+    plt.plot(acf_lags, acf_corr, linestyle = '-', marker = '.', color = 'black', label = 'ACF')
+    plt.xlabel('lags [days]')
+    plt.ylabel('r')
+    plt.legend(loc = 'best')
+    
+    plt.figure()
+    
+    plt.plot(avg_lags, avg_corr, linestyle = '-', marker = '.', color = 'black', label = 'Average')
+    
+    mask = (avg_corr >= 0.8 * avg_corr.max())
+    above_corr = avg_corr[mask]
+    above_lags = avg_lags[mask]
+    
+    if above_corr.size > 0:
+        for idx in range(len(above_corr)):
+            plt.plot([above_lags[idx], above_lags[idx]], [above_corr[idx], 0.8 * above_corr.max()], color = 'red')
+    
+        plt.plot([centroid, centroid], [above_corr.min(), avg_corr.min()], linestyle = '--', color = 'red')
+        plt.annotate(r'%.1f' % (centroid), xy = (centroid + 2 * args.dt, avg_corr.min() + 0.2))
+        plt.ylim([avg_corr.min(), avg_corr.max()])
+        
+    plt.xlabel('lags [days]')
+    plt.ylabel('r')
+    plt.legend(loc = 'best')
 
-def calc_uncertaintities(results, title = None):
+def calc_uncertaintities(ccf, title = None):
     """ Calculate upper and lower uncertainties on the centroid or peak
         
     Parameters
     ----------
     
-        results (array): Centroid or peak distribution
-        title   (str)  : Centroid or Peak
+        ccf   (array): Centroid or peak distribution
+        title (str)  : Centroid or Peak
         
     Returns
     -------
@@ -220,7 +262,7 @@ def calc_uncertaintities(results, title = None):
         The median and associated upper and lower uncertainties
     """
     # Sort the array
-    sorted = np.sort(results)
+    sorted = np.sort(ccf)
     
     # Get the median of the distribution
     lag = np.percentile(sorted, 50)
@@ -237,6 +279,8 @@ def calc_uncertaintities(results, title = None):
     print('The upper error: {} days'.format(upper))
     print('The lower error: {} days'.format(lower))
     print('The median: {} days'.format(lag))
+
+    return lag, upper, lower
 
 def interpolation(t, y, dy):
     """ Put on a uniform time grid by interpolating
@@ -256,16 +300,19 @@ def interpolation(t, y, dy):
     new_t = np.arange(t[0], t[-1] + dy, dy)
     new_y = np.interp(new_t, t, y)
 
-    return {'t': new_t, 'y': new_y}
+    return new_t, new_y
 
-def show_CCPD(lags, results, title = None):
+def show_CCPD(lags, ccf, lag, up, lw, title = None):
     """ Plot the centroid or peak distribution
         
     Parameters
     ----------
     
-        results (array): Centroid or peak distribution
+        ccf     (array): Centroid or peak distribution
         lags    (array): Lag values
+        lag     (float): Median of the distribution
+        up      (float): Upper error
+        lw      (float : Lower error
         title   (str)  : Appropriate plot title
 
     Returns
@@ -275,10 +322,20 @@ def show_CCPD(lags, results, title = None):
     """
     plt.figure()
     
-    plt.hist(results, lags, normed = True, histtype = 'step', color = 'black')
-    plt.xlabel('Lags [days]', fontsize = 'x-large')
-    plt.ylabel('Probability', fontsize = 'x-large')
-    plt.title(title, fontsize = 'x-large')
+    n, bins, patches = plt.hist(ccf, lags, normed = True, histtype = 'step', color = 'black')
+    
+    mask = ((lags > lag + lw) & (lags < lag)) | ((lags > lag) & (lags < (lag + up)))
+    lags_masked = lags[mask]
+    indices = np.searchsorted(lags, lags_masked)
+
+    if indices.size > 0:
+        for idx in indices:
+            plt.plot([lags[idx], lags[idx]], [0, n[idx]], linestyle = '--', color = 'red')
+    
+        plt.plot([lag, lag], [0, np.interp(lag, lags[indices], n[indices])], linewidth = 3, color = 'red')
+    plt.xlabel('Lags [days]')
+    plt.ylabel('Probability')
+    plt.title(title)
 
 # Error estimation using flux randomization and random subset selection method
 
@@ -323,7 +380,7 @@ def subset(t, y, yerr):
     # Add Gaussian noise
     y_rm_dupl_noise = np.random.normal(y_rm_dupl, yerr_rm_dupl)
 
-    return {'y': y_rm_dupl_noise, 't': t_rm_dupl}
+    return y_rm_dupl_noise, t_rm_dupl
 
 def FR_RSS(x, tx, xerr, y, ty, yerr, minlag, maxlag, step, num = None):
     """ Calculate the centroid and peak distributions
@@ -355,25 +412,25 @@ def FR_RSS(x, tx, xerr, y, ty, yerr, minlag, maxlag, step, num = None):
 
     for index in range(num):
         # Random subset selection
-        line = subset(tx, x, xerr)
-        cont = subset(ty, y, yerr)
+        sub_ln_y, sub_ln_t = subset(tx, x, xerr)
+        sub_ct_y, sub_ct_t = subset(ty, y, yerr)
         
         # Cross-correlation
-        first_pass = cross_corr(line['y'], line['t'], cont['y'], cont['t'], minlag, maxlag, step, shifted = 'C')
-        second_pass = cross_corr(line['y'], line['t'], cont['y'], cont['t'], minlag, maxlag, step, shifted = 'L')
+        first_pass = cross_corr(sub_ln_y, sub_ln_t, sub_ct_y, sub_ct_t, minlag, maxlag, step, shifted = 'C')
+        second_pass = cross_corr(sub_ln_y, sub_ln_t, sub_ct_y, sub_ct_t, minlag, maxlag, step, shifted = 'L')
 
         avg_corr = np.mean(np.array([first_pass, second_pass]), axis = 0)
         lags = np.arange(minlag, maxlag + step, step)
 
         
         # Get the lags
-        results = get_lags(lags, avg_corr, threshold = 80)
+        cen, pk = get_lags(lags, avg_corr, threshold = 80)
         
         # Append
-        centroids[index] = results['centroid']
-        peaks[index] = results['peak']
+        centroids[index] = cen
+        peaks[index] = pk
 
-    return {'centroids': centroids, 'peaks': peaks}
+    return centroids, peaks
 
 
 if __name__=='__main__':
@@ -388,55 +445,55 @@ if __name__=='__main__':
     args = parser.parse_args()
 
     # Read user files
+    ln_t, ln_y, ln_ye = read(args.line)
+    ct_t, ct_y, ct_ye = read(args.cont)
+    
+    prompt_user = raw_input('Is the continuum expressed in magnitude (y/n): ')
 
-    line = read(args.line)
-    cont = read(args.cont)
-
-    cont_t, cont_f = cont['t'], mag_to_flux(cont['y'])
-    cont_err = to_flux_err(cont['yerr'], cont_f)
-    line_t, line_f, line_err = line['t'], line['y'], line['yerr']
+    if prompt_user == 'y':
+        ct_y = mag_to_flux(ct_y)
+        ct_ye = to_flux_err(ct_ye, ct_y)
 
     # Plot original light curves
-
-    plot_original(cont_t, cont_f, cont_err, title = 'Continuum')
-    plot_original(line_t, line_f, line_err, title = 'Line')
+    plot_original(ct_t, ct_y, ct_ye, ln_t, ln_y, ln_ye, t = 'Continuum', t2 = 'Line')
     
     # Interpolation
-
-    interp_cont = interpolation(cont_t, cont_f, args.dt)
-    interp_line = interpolation(line_t, line_f, args.dt)
+    interp_ct_t, interp_ct_y = interpolation(ct_t, ct_y, args.dt)
 
     # Lag range
     lags = np.arange(args.lgl, args.lgh + args.dt, args.dt)
-    
+
     # Auto-correlation
-
-    acf_cont = cross_corr(interp_cont['y'], interp_cont['t'], interp_cont['y'], interp_cont['t'], args.lgl, args.lgh, args.dt, shifted = 'C')
-    acf_line = cross_corr(interp_line['y'], interp_line['t'], interp_line['y'], interp_line['t'], args.lgl, args.lgh, args.dt, shifted = 'L')
-
-    show_CCF(lags, acf_cont, title = 'Continuum ACF')
-    show_CCF(lags, acf_line, title = 'Line ACF')
+    acf_cont = cross_corr(interp_ct_y, interp_ct_t, interp_ct_y, interp_ct_t, args.lgl, args.lgh, args.dt, shifted = 'C')
 
     # Cross-correlation
-
-    first_pass = cross_corr(line_f, line_t, cont_f, cont_t, args.lgl, args.lgh, args.dt, shifted = 'C')
-    second_pass = cross_corr(line_f, line_t, cont_f, cont_t, args.lgl, args.lgh, args.dt, shifted = 'L')
+    first_pass = cross_corr(ln_y, ln_t, ct_y, ct_t, args.lgl, args.lgh, args.dt, shifted = 'C')
+    second_pass = cross_corr(ln_y, ln_t, ct_y, ct_t, args.lgl, args.lgh, args.dt, shifted = 'L')
     
     avg_corr = np.mean(np.array([first_pass, second_pass]), axis = 0)
-    
-    show_CCF(lags, avg_corr, title = 'CCF')
 
-    orig_lags = get_lags(lags, avg_corr, threshold = 80)
+    # Get centroid and peak
+    cen, pk = get_lags(lags, avg_corr, threshold = 80)
 
-    print('The centroid of the original data: {} days'.format(orig_lags['centroid']))
-    print('The peak of the original data: {} days'.format(orig_lags['peak']))
+    # Plot
+    show_CCF(lags, avg_corr, lags, acf_cont, cen, pk)
 
-    results = FR_RSS(line_f, line_t, line_err, cont_f, cont_t, cont_err, args.lgl, args.lgh, args.dt, num = 1000)
+    print('The centroid of the original data: '+str(cen))
+    print('The peak of the original data: '+str(pk))
     
-    calc_uncertaintities(results['centroids'], title = 'Centroid')
-    calc_uncertaintities(results['peaks'], title = 'Peaks')
+    # Get errors
+    centroids, peaks = FR_RSS(ln_y, ln_t, ln_ye, ct_y, ct_t, ct_ye, args.lgl, args.lgh, args.dt, num = 1000)
     
-    show_CCPD(lags, results['centroids'], title = r'$\tau_{cent}$')
-    show_CCPD(lags, results['peaks'], title = r'$\tau_{peak}$')
+    cen_med, cen_up, cen_lw = calc_uncertaintities(centroids, title = 'Centroid')
+    pk_med, pk_up, pk_lw = calc_uncertaintities(peaks, title = 'Peaks')
+
+    # Show distributions
+    show_CCPD(lags, centroids, cen_med, cen_up, cen_lw, title = r'$\tau_{cent}$')
+    show_CCPD(lags, peaks, pk_med, pk_up, pk_lw, title = r'$\tau_{peak}$')
     
-    plt.show()
+    # Save to PDF file
+    pdf = PdfPages('test.pdf')
+    
+    for fig in xrange(1, plt.figure().number): # will open an empty extra figure :(
+        pdf.savefig( fig )
+    pdf.close()
